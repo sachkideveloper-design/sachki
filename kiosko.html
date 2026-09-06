@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Recepción - Check-in</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="kiosko-body">
+
+    <!-- LOGIN (solo un coach/dueño debe iniciar sesión aquí, una vez, en la compu de recepción) -->
+    <div id="kioskoLogin" class="kiosko-login-box">
+        <h1 data-gym-nombre style="margin-bottom:4px;">FITMANYACTS</h1>
+        <p style="color:var(--text-light);font-size:13px;margin-bottom:24px;">Inicia sesión con tu cuenta de coach/dueño para dejar esta pantalla lista en recepción.</p>
+        <form id="kioskoLoginForm" class="form">
+            <div class="form-group">
+                <label for="kioskoEmail">Email</label>
+                <input type="email" id="kioskoEmail" required>
+            </div>
+            <div class="form-group">
+                <label for="kioskoPassword">Contraseña</label>
+                <input type="password" id="kioskoPassword" required>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;">Entrar</button>
+        </form>
+        <p id="kioskoLoginError" style="color:var(--danger-color);font-size:13px;margin-top:12px;display:none;"></p>
+    </div>
+
+    <!-- MODO KIOSKO (pantalla completa, se queda así todo el día) -->
+    <div id="kioskoMain" style="display:none;width:100%;">
+
+        <div id="kioskoEsperando" class="kiosko-waiting">
+            <svg class="kiosko-waiting-icon" viewBox="0 0 24 24" fill="none" stroke="var(--primary-color)" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><line x1="14" y1="14" x2="21" y2="14"/><line x1="14" y1="21" x2="21" y2="21"/><line x1="17.5" y1="14" x2="17.5" y2="21"/></svg>
+            <div style="font-size:20px;font-weight:700;">Esperando código...</div>
+            <div style="color:var(--text-light);font-size:14px;">Escanea el QR de acceso del miembro</div>
+        </div>
+
+        <div id="kioskoResultado" class="kiosko-resultado" style="display:none;">
+            <div id="kioskoIcono" class="kiosko-icono-check"></div>
+            <div id="kioskoFotoWrap"></div>
+            <div id="kioskoNombre" class="kiosko-nombre"></div>
+            <div id="kioskoMotivo" class="kiosko-motivo"></div>
+        </div>
+
+        <!-- Input invisible que "recibe" lo que teclea el lector USB (se mantiene enfocado siempre) -->
+        <input type="text" id="kioskoScannerInput" autocomplete="off"
+               style="position:absolute;opacity:0;pointer-events:none;top:-100px;">
+
+        <p style="position:fixed;bottom:14px;right:18px;font-size:11px;color:#333;">
+            <span id="kioskoUserLabel"></span> · <a href="#" id="kioskoLogoutBtn" style="color:#555;">cerrar sesión</a>
+        </p>
+    </div>
+
+    <script src="gym-config.js"></script>
+    <script src="firebase-init.js"></script>
+    <script src="storage.js"></script>
+    <script>
+        const scannerInput = document.getElementById('kioskoScannerInput');
+        const esperandoEl = document.getElementById('kioskoEsperando');
+        const resultadoEl = document.getElementById('kioskoResultado');
+        let timeoutVolverAEsperar = null;
+
+        function enfocarScanner() {
+            // El lector USB "escribe" en el elemento que tenga el foco, así que
+            // lo re-enfocamos todo el tiempo (cada click, cada resultado, etc.)
+            if (scannerInput) scannerInput.focus({ preventScroll: true });
+        }
+
+        function mostrarEsperando() {
+            clearTimeout(timeoutVolverAEsperar);
+            resultadoEl.style.display = 'none';
+            esperandoEl.style.display = 'flex';
+            scannerInput.value = '';
+            enfocarScanner();
+        }
+
+        function mostrarResultado({ ok, nombre, fotoUrl, motivo }) {
+            esperandoEl.style.display = 'none';
+            resultadoEl.style.display = 'flex';
+            resultadoEl.className = 'kiosko-resultado ' + (ok ? 'ok' : 'error');
+            document.getElementById('kioskoIcono').textContent = ok ? '✅' : '❌';
+            document.getElementById('kioskoNombre').textContent = nombre || '—';
+            document.getElementById('kioskoMotivo').textContent = ok ? 'Acceso permitido' : (motivo || 'Acceso rechazado');
+
+            const fotoWrap = document.getElementById('kioskoFotoWrap');
+            fotoWrap.innerHTML = fotoUrl
+                ? `<img src="${fotoUrl}" class="kiosko-foto" alt="">`
+                : `<div class="kiosko-foto-placeholder">👤</div>`;
+
+            // Vuelve solo a la pantalla de espera después de unos segundos
+            timeoutVolverAEsperar = setTimeout(mostrarEsperando, 4000);
+        }
+
+        async function procesarEscaneo(texto) {
+            if (!texto || !texto.trim()) return;
+            const r = await storage.registrarAcceso(texto.trim());
+            if (r.exito) {
+                mostrarResultado({ ok: true, nombre: r.usuario.nombre, fotoUrl: r.usuario.foto_url });
+            } else {
+                mostrarResultado({
+                    ok: false,
+                    nombre: r.usuario ? r.usuario.nombre : null,
+                    fotoUrl: r.usuario ? r.usuario.foto_url : null,
+                    motivo: r.motivo
+                });
+            }
+        }
+
+        // La mayoría de lectores USB QR terminan el escaneo enviando "Enter"
+        scannerInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                procesarEscaneo(scannerInput.value);
+                scannerInput.value = '';
+            }
+        });
+
+        document.addEventListener('click', enfocarScanner);
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) enfocarScanner(); });
+
+        // ─── Login / arranque ──────────────────────────────────────────────────
+        function arrancarKiosko() {
+            document.getElementById('kioskoLogin').style.display = 'none';
+            document.getElementById('kioskoMain').style.display = 'block';
+            mostrarEsperando();
+        }
+
+        function esperarFirebaseListo(cb) {
+            if (window.db && window.firestoreSDK) return cb();
+            window.addEventListener('firebaseReady', cb, { once: true });
+        }
+
+        esperarFirebaseListo(() => {
+            window.auth.onAuthStateChanged(async user => {
+                if (!user) return; // se queda en el login
+                const usuario = await storage.buscarUsuarioPorEmail(user.email);
+                if (!usuario || (usuario.rol !== 'entrenador' && usuario.rol !== 'dueño')) {
+                    document.getElementById('kioskoLoginError').style.display = 'block';
+                    document.getElementById('kioskoLoginError').textContent = 'Esta cuenta no tiene permisos de coach/dueño.';
+                    await storage.cerrarSesion();
+                    return;
+                }
+                document.getElementById('kioskoUserLabel').textContent = usuario.nombre;
+                arrancarKiosko();
+            });
+        });
+
+        document.getElementById('kioskoLoginForm').addEventListener('submit', async e => {
+            e.preventDefault();
+            const email = document.getElementById('kioskoEmail').value.trim();
+            const password = document.getElementById('kioskoPassword').value;
+            const errorEl = document.getElementById('kioskoLoginError');
+            errorEl.style.display = 'none';
+            try {
+                await window.authSDK.signInWithEmailAndPassword(email, password);
+            } catch (err) {
+                errorEl.textContent = 'Email o contraseña incorrectos';
+                errorEl.style.display = 'block';
+            }
+        });
+
+        document.getElementById('kioskoLogoutBtn').addEventListener('click', async e => {
+            e.preventDefault();
+            await storage.cerrarSesion();
+            location.reload();
+        });
+    </script>
+</body>
+</html>

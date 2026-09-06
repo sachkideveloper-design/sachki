@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function autenticado() {
+      return request.auth != null;
+    }
+    // Lee el propio documento del que hace la petición (su doc ahora vive en usuarios/{su propio uid})
+    function usuarioAuth() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data;
+    }
+    function esAdmin() {
+      return autenticado() && usuarioAuth().rol in ['entrenador', 'dueño'];
+    }
+    // Autenticado en Firebase Auth NO es lo mismo que ser miembro real.
+    // Esta función exige que además exista un documento en usuarios/{uid},
+    // que ahora solo un admin puede crear (ver reglas de create abajo).
+    // Evita que alguien cree una cuenta suelta (sin perfil) desde la consola
+    // del navegador y aun así pueda leer todos los usuarios/reservas.
+    function esMiembro() {
+      return autenticado() &&
+        exists(/databases/$(database)/documents/usuarios/$(request.auth.uid));
+    }
+
+    match /usuarios/{userId} {
+      allow read: if esMiembro();
+      // Autoregistro CERRADO: solo un admin (coach o dueño) puede crear
+      // el documento de un usuario. Nadie puede darse de alta solo.
+      allow create: if esAdmin();
+      // Un admin puede editar cualquier cuenta (activar membresía, cambiar estado, etc.).
+      // Cualquiera puede editar SOLO su propio documento, pero nunca puede tocar
+      // rol / membresia_vence / uid / email por su cuenta.
+      // El campo 'estado' solo se puede autoeditar para pasar de 'pendiente' a 'activo'
+      // (activación de cuenta al cambiar la contraseña temporal la primera vez).
+      allow update: if autenticado() && (
+        esAdmin() ||
+        (
+          userId == request.auth.uid &&
+          !request.resource.data.diff(resource.data).affectedKeys()
+                .hasAny(['rol', 'membresia_vence', 'uid', 'email']) &&
+          (
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny(['estado']) ||
+            (resource.data.estado == 'pendiente' && request.resource.data.estado == 'activo')
+          )
+        )
+      );
+      // Borrar cuentas: solo coaches/dueño.
+      allow delete: if esAdmin();
+    }
+    match /reservas/{reservaId} {
+      allow read: if esMiembro();
+      // Puedes reservar para ti mismo, o un admin puede reservar/anotar a nombre de otro
+      allow create: if esMiembro() &&
+        (request.resource.data.usuarioId == request.auth.uid || esAdmin());
+      // Puedes desanotarte tú mismo, o un admin puede desanotar a cualquiera
+      allow delete: if esMiembro() &&
+        (resource.data.usuarioId == request.auth.uid || esAdmin());
+      allow update: if false;
+    }
+    match /eventos/{eventoId} {
+      allow read: if esMiembro();
+      allow create, update, delete: if esAdmin();
+    }
+    match /reto90/{docId} {
+      allow read: if esMiembro();
+      allow create, update, delete: if esAdmin();
+    }
+    // Bitácora de check-ins del lector QR de recepción.
+    // Solo un admin (la cuenta que usa el dispositivo de recepción) puede
+    // escribir/leer. No se permite update ni delete: es un registro histórico.
+    match /accesos/{accesoId} {
+      allow read: if esAdmin();
+      allow create: if esAdmin();
+      allow update, delete: if false;
+    }
+  }
+}
